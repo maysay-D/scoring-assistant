@@ -55,9 +55,10 @@ class Answer:
                     enc = detect(b)["encoding"]
                     if enc is None:
                         enc = "utf-8"
+                    # まず検出したエンコーディングでデコード
                     self.code_txt = b.decode(enc, errors="backslashreplace")
 
-                    # packageの除外とファイルの作成
+                    # packageの除外とファイルの作成（JavaはUTF-8で保存して再コンパイルする）
                     if self.task_lang == "java":
                         self.code_txt = re.sub(
                             "(^package.*)",
@@ -65,25 +66,21 @@ class Answer:
                             formating(self.code_txt),
                             flags=re.MULTILINE,
                         )
-                        self.file_path = Path(
-                            self.file_path.parent, "format", self.file_path.name
-                        )
+                        self.file_path = Path(self.file_path.parent, "format", self.file_path.name)
                         self.file_path.parent.mkdir(exist_ok=True)
-                        with self.file_path.open(mode="w") as ff:
+                        # ここでUTF-8に変換して書き出す（Shift_JISでもUTF-8へ統一）
+                        with self.file_path.open(mode="w", encoding="utf-8", newline="\n") as ff:
                             ff.write(self.code_txt)
 
         except Exception as e:
-            self.code_txt = (
-                "Open Error : " + str(self.file_path) + "\n手動で確認してください"
-            )
+            self.code_txt = "Open Error : " + str(self.file_path) + "\n手動で確認してください"
             print(self.file_path, e)
         self.code_txt = self.code_txt.strip()
         return self.code_txt
 
     def execute(self):
-        # 対象ユーザのディレクトリでコンパイル
         if self.task_lang == "java":
-            cmd = ["javac"]
+            cmd = ["javac", "-encoding", "UTF-8"]
             if self.classpath is not None and len(self.classpath[0]) > 1:
                 cmd += ["-classpath", sep.join(self.classpath)]
             cmd += [self.file_path.name]
@@ -98,12 +95,11 @@ class Answer:
             result = result_b.decode(enc, errors="backslashreplace")
             self.result_txt += (
                 f"{' COMPILE RESULT ':-^70}\n"
-                # f"CMD = {' '.join(cmd)}\n\n"
                 f"{result.strip()}\n"
             )
 
         elif self.task_lang == "c":
-            executable = self.file_path.with_suffix('.out')
+            executable = self.file_path.with_suffix(".out")
             cmd = ["gcc", "-Wall", self.file_path.name, "-o", executable.name]
             result = subprocess.run(
                 args=cmd,
@@ -119,12 +115,13 @@ class Answer:
                 f"{result.strip()}\n"
             )
 
-            cmd = [f"./{executable.name}"]
+            # 実行（引数ごとに cmd を再構築）
+            run_base = [f"./{executable.name}"]
             for arg in self.args if self.args else [{"args_value": []}]:
                 arg_v: list[str] = arg["args_value"]
                 for inp in self.inputs if self.inputs else [{"inputs_value": ""}]:
                     inputs: str = inp["inputs_value"]
-                    cmd += arg_v
+                    cmd = run_base + arg_v  # 累積させない
                     try:
                         result = subprocess.run(
                             args=cmd,
@@ -145,28 +142,28 @@ class Answer:
                         )
                     except Exception as e:
                         self.result_txt += f"Exec Error : 手動で確認してください\n{e}\n"
-                # *.outファイルを削除
-                try:
-                    os.remove(executable)
-                except Exception as e:
-                    self.result_txt += f"Cleanup Error : {e}\n"
+            try:
+                os.remove(executable)
+            except Exception as e:
+                self.result_txt += f"Cleanup Error : {e}\n"
 
-        # 対象ユーザのディレクトリで実行
+        # 実行コマンドのベース作成（jar / java）
         if self.task_lang == "jar":
-            cmd = ["java", "-jar", self.file_path.name]
+            cmd_base = ["java", "-jar", self.file_path.name]
         elif self.task_lang == "java":
-            cmd = ["java"]
+            cmd_base = ["java"]
             if self.classpath is not None and len(self.classpath[0]) > 1:
-                cmd += ["--class-path", sep.join(self.classpath + ["."])]
-            cmd += [self.file_path.stem]
+                cmd_base += ["--class-path", sep.join(self.classpath + ["."])]
+            cmd_base += [self.file_path.stem]
         else:
             return
 
+        # 引数ごとに cmd を再構築して実行
         for arg in self.args if self.args else [{"args_value": []}]:
             arg_v: list[str] = arg["args_value"]
             for inp in self.inputs if self.inputs else [{"inputs_value": ""}]:
                 inputs: str = inp["inputs_value"]
-                cmd += arg_v
+                cmd = cmd_base + arg_v  # 累積させない
                 try:
                     result = subprocess.run(
                         args=cmd,
@@ -183,15 +180,13 @@ class Answer:
                         f"args  = {arg_v}\n\n"
                         f"input ↓ \n\"\"\"\n{inputs}\n\"\"\"\n"
                         f"{' RESULT ':-^70}\n"
-                        # f"CMD = {' '.join(cmd)}\n\n"
                         f"{result.strip()}\n\n"
                     )
                 except Exception as e:
                     self.result_txt += f"Exec Error : 手動で確認してください\n{e}\n"
+
         self.result_txt = self.result_txt.strip()
-
         return self.result_txt
-
 
 def formating(code: str):
     """
